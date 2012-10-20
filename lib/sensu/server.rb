@@ -25,16 +25,10 @@ module Sensu
 
     def setup_redis
       @logger.debug('connecting to redis', {
-        :settings => @settings[:redis]
+          :settings => @settings[:redis]
       })
       connection_failure = Proc.new do
-        @logger.fatal('cannot connect to redis', {
-          :settings => @settings[:redis]
-        })
-        @logger.fatal('SENSU NOT RUNNING!')
-        if @rabbitmq
-          @rabbitmq.close
-        end
+        #stop
         exit 2
       end
       @redis = Sensu::Redis.connect(@settings[:redis], :on_tcp_connection_failure => connection_failure)
@@ -48,11 +42,11 @@ module Sensu
 
     def setup_rabbitmq
       @logger.debug('connecting to rabbitmq', {
-        :settings => @settings[:rabbitmq]
+          :settings => @settings[:rabbitmq]
       })
       connection_failure = Proc.new do
         @logger.fatal('cannot connect to rabbitmq', {
-          :settings => @settings[:rabbitmq]
+            :settings => @settings[:rabbitmq]
         })
         @logger.fatal('SENSU NOT RUNNING!')
         @redis.close
@@ -75,7 +69,7 @@ module Sensu
       @keepalive_queue.subscribe do |payload|
         client = JSON.parse(payload, :symbolize_names => true)
         @logger.debug('received keepalive', {
-          :client => client
+            :client => client
         })
         @redis.set('client:' + client[:name], client.to_json).callback do
           @redis.sadd('clients', client[:name])
@@ -114,7 +108,7 @@ module Sensu
       end
       if subdue
         (!check[:subdue].has_key?(:at) && subdue_at == :handler) ||
-          (check[:subdue].has_key?(:at) && check[:subdue][:at].to_sym == subdue_at)
+            (check[:subdue].has_key?(:at) && check[:subdue][:at].to_sym == subdue_at)
       else
         false
       end
@@ -122,13 +116,13 @@ module Sensu
 
     def check_handlers(check)
       handler_list = case
-      when check.has_key?(:handler)
-        [check[:handler]]
-      when check.has_key?(:handlers)
-        check[:handlers]
-      else
-        ['default']
-      end
+                       when check.has_key?(:handler)
+                         [check[:handler]]
+                       when check.has_key?(:handlers)
+                         check[:handlers]
+                       else
+                         ['default']
+                     end
       handler_list.map! do |handler_name|
         if @settings.handler_exists?(handler_name) && @settings[:handlers][handler_name][:type] == 'set'
           @settings[:handlers][handler_name][:handlers]
@@ -141,9 +135,9 @@ module Sensu
       handler_list.reject! do |handler_name|
         unless @settings.handler_exists?(handler_name)
           @logger.warn('unknown handler', {
-            :handler => {
-              :name => handler_name
-            }
+              :handler => {
+                  :name => handler_name
+              }
           })
           true
         else
@@ -159,44 +153,44 @@ module Sensu
       if handler.has_key?(:mutator)
         mutated = nil
         case handler[:mutator]
-        when /^only_check_output/
-          if handler[:type] == 'amqp' && handler[:mutator] =~ /split$/
-            mutated = Array.new
-            event[:check][:output].split(/\n+/).each do |line|
-              mutated.push(line)
+          when /^only_check_output/
+            if handler[:type] == 'amqp' && handler[:mutator] =~ /split$/
+              mutated = Array.new
+              event[:check][:output].split(/\n+/).each do |line|
+                mutated.push(line)
+              end
+            else
+              mutated = event[:check][:output]
             end
           else
-            mutated = event[:check][:output]
-          end
-        else
-          if @settings.mutator_exists?(handler[:mutator])
-            mutator = @settings[:mutators][handler[:mutator]]
-            begin
-              IO.popen(mutator[:command], 'r+') do |io|
-                io.write(event.to_json)
-                io.close_write
-                mutated = io.read
-              end
-              if $?.exitstatus != 0
-                @logger.warn('mutator had a non-zero exit status', {
-                  :event => event,
-                  :mutator => mutator
+            if @settings.mutator_exists?(handler[:mutator])
+              mutator = @settings[:mutators][handler[:mutator]]
+              begin
+                IO.popen(mutator[:command], 'r+') do |io|
+                  io.write(event.to_json)
+                  io.close_write
+                  mutated = io.read
+                end
+                if $?.exitstatus != 0
+                  @logger.warn('mutator had a non-zero exit status', {
+                      :event => event,
+                      :mutator => mutator
+                  })
+                end
+              rescue => error
+                @logger.error('mutator error', {
+                    :event => event,
+                    :mutator => mutator,
+                    :error => error.to_s
                 })
               end
-            rescue => error
-              @logger.error('mutator error', {
-                :event => event,
-                :mutator => mutator,
-                :error => error.to_s
+            else
+              @logger.error('unknown mutator', {
+                  :mutator => {
+                      :name => handler[:mutator]
+                  }
               })
             end
-          else
-            @logger.error('unknown mutator', {
-              :mutator => {
-                :name => handler[:mutator]
-              }
-            })
-          end
         end
         mutated
       else
@@ -209,109 +203,122 @@ module Sensu
         handlers = check_handlers(event[:check])
         handlers.each do |handler|
           @logger.send(event[:check][:type] == 'metric' ? :debug : :info, 'handling event', {
-            :event => event,
-            :handler => handler
+              :event => event,
+              :handler => handler
           })
           @handlers_in_progress_count += 1
           case handler[:type]
-          when 'pipe'
-            execute = Proc.new do
-              begin
-                mutated_event_data = mutate_event_data(handler, event)
-                unless mutated_event_data.nil? || mutated_event_data.empty?
-                  IO.popen(handler[:command] + ' 2>&1', 'r+') do |io|
-                    io.write(mutated_event_data)
-                    io.close_write
-                    io.read.split(/\n+/).each do |line|
-                      @logger.info(line)
-                    end
-                  end
-                end
-              rescue => error
-                @logger.error('handler error', {
-                  :event => event,
-                  :handler => handler,
-                  :error => error.to_s
-                })
-              end
-            end
-            complete = Proc.new do
+            when 'pipe'
+              handle_pipe event, handler
+            when 'tcp', 'udp'
+              handle_tcp_udp event, handler
+            when 'amqp'
+              handle_amqp event, handler
+            when 'set'
+              @logger.error('handler sets cannot be nested', {
+                  :handler => handler
+              })
               @handlers_in_progress_count -= 1
-            end
-            EM::defer(execute, complete)
-          when 'tcp', 'udp'
-            data = Proc.new do
-              mutate_event_data(handler, event)
-            end
-            write = Proc.new do |data|
-              begin
-                case handler[:type]
-                when 'tcp'
-                  EM::connect(handler[:socket][:host], handler[:socket][:port], nil) do |socket|
-                    socket.send_data(data)
-                    socket.close_connection_after_writing
-                  end
-                when 'udp'
-                  EM::open_datagram_socket('127.0.0.1', 0, nil) do |socket|
-                    socket.send_datagram(data, handler[:socket][:host], handler[:socket][:port])
-                    socket.close_connection_after_writing
-                  end
-                end
-              rescue => error
-                @logger.error('handler error', {
-                  :event => event,
-                  :handler => handler,
-                  :error => error.to_s
-                })
-              end
-              @handlers_in_progress_count -= 1
-            end
-            EM::defer(data, write)
-          when 'amqp'
-            exchange_name = handler[:exchange][:name]
-            exchange_type = handler[:exchange].has_key?(:type) ? handler[:exchange][:type].to_sym : :direct
-            exchange_options = handler[:exchange].reject do |key, value|
-              [:name, :type].include?(key)
-            end
-            payloads = Proc.new do
-              Array(mutate_event_data(handler, event))
-            end
-            publish = Proc.new do |payloads|
-              payloads.each do |payload|
-                unless payload.empty?
-                  @amq.method(exchange_type).call(exchange_name, exchange_options).publish(payload)
-                end
-              end
-              @handlers_in_progress_count -= 1
-            end
-            EM::defer(payloads, publish)
-          when 'set'
-            @logger.error('handler sets cannot be nested', {
-              :handler => handler
-            })
-            @handlers_in_progress_count -= 1
           end
         end
       end
     end
 
+    def handle_tcp_udp event, handler
+      data = Proc.new do
+        mutate_event_data(handler, event)
+      end
+      write = Proc.new do |data|
+        begin
+          case handler[:type]
+            when 'tcp'
+              EM::connect(handler[:socket][:host], handler[:socket][:port], nil) do |socket|
+                socket.send_data(data)
+                socket.close_connection_after_writing
+              end
+            when 'udp'
+              EM::open_datagram_socket('127.0.0.1', 0, nil) do |socket|
+                socket.send_datagram(data, handler[:socket][:host], handler[:socket][:port])
+                socket.close_connection_after_writing
+              end
+          end
+        rescue => error
+          @logger.error('handler error', {
+              :event => event,
+              :handler => handler,
+              :error => error.to_s
+          })
+        end
+        @handlers_in_progress_count -= 1
+      end
+      EM::defer(data, write)
+    end
+
+    def handle_pipe event, handler
+      execute = Proc.new do
+        begin
+          mutated_event_data = mutate_event_data(handler, event)
+          unless mutated_event_data.nil? || mutated_event_data.empty?
+            IO.popen(handler[:command] + ' 2>&1', 'r+') do |io|
+              io.write(mutated_event_data)
+              io.close_write
+              io.read.split(/\n+/).each do |line|
+                @logger.info(line)
+              end
+            end
+          end
+        rescue => error
+          @logger.error('handler error', {
+              :event => event,
+              :handler => handler,
+              :error => error.to_s
+          })
+        end
+      end
+      complete = Proc.new do
+        @handlers_in_progress_count -= 1
+      end
+      EM::defer(execute, complete)
+    end
+
+    def handle_amqp(event, handler)
+
+      exchange_name = handler[:exchange][:name]
+      exchange_type = handler[:exchange].has_key?(:type) ? handler[:exchange][:type].to_sym : :direct
+      exchange_options = handler[:exchange].reject do |key, value|
+        [:name, :type].include?(key)
+      end
+      payloads = Proc.new do
+        Array(mutate_event_data(handler, event))
+      end
+      publish = Proc.new do |payloads|
+        payloads.each do |payload|
+          unless payload.empty?
+            @amq.method(exchange_type).call(exchange_name, exchange_options).publish(payload)
+          end
+        end
+        @handlers_in_progress_count -= 1
+      end
+      EM::defer(payloads, publish)
+    end
+
     def process_result(result)
       @logger.debug('processing result', {
-        :result => result
+          :result => result
       })
       @redis.get('client:' + result[:client]).callback do |client_json|
         unless client_json.nil?
           client = JSON.parse(client_json, :symbolize_names => true)
           check = case
-          when @settings.check_exists?(result[:check][:name])
-            @settings[:checks][result[:check][:name]].merge(result[:check])
-          else
-            result[:check]
-          end
+                    when @settings.check_exists?(result[:check][:name])
+                      @settings[:checks][result[:check][:name]].merge(result[:check])
+                    else
+                      result[:check]
+                  end
           event = {
-            :client => client,
-            :check => check,
-            :occurrences => 1
+              :client => client,
+              :check => check,
+              :occurrences => 1
           }
           @redis.sadd('history:' + client[:name], check[:name])
           history_key = 'history:' + client[:name] + ':' + check[:name]
@@ -339,24 +346,24 @@ module Sensu
                 if check.has_key?(:low_flap_threshold) && check.has_key?(:high_flap_threshold)
                   was_flapping = previous_occurrence ? previous_occurrence[:flapping] : false
                   is_flapping = case
-                  when total_state_change >= check[:high_flap_threshold]
-                    true
-                  when was_flapping && total_state_change <= check[:low_flap_threshold]
-                    false
-                  else
-                    was_flapping
-                  end
+                                  when total_state_change >= check[:high_flap_threshold]
+                                    true
+                                  when was_flapping && total_state_change <= check[:low_flap_threshold]
+                                    false
+                                  else
+                                    was_flapping
+                                end
                 end
                 if check[:status] != 0
                   if previous_occurrence && check[:status] == previous_occurrence[:status]
                     event[:occurrences] = previous_occurrence[:occurrences] += 1
                   end
                   @redis.hset('events:' + client[:name], check[:name], {
-                    :output => check[:output],
-                    :status => check[:status],
-                    :issued => check[:issued],
-                    :flapping => is_flapping,
-                    :occurrences => event[:occurrences]
+                      :output => check[:output],
+                      :status => check[:status],
+                      :issued => check[:issued],
+                      :flapping => is_flapping,
+                      :occurrences => event[:occurrences]
                   }.to_json).callback do
                     unless check[:handle] == false
                       event[:check][:flapping] = is_flapping
@@ -364,7 +371,7 @@ module Sensu
                       handle_event(event)
                     else
                       @logger.debug('handling disabled', {
-                        :event => event
+                          :event => event
                       })
                     end
                   end
@@ -378,14 +385,14 @@ module Sensu
                           handle_event(event)
                         else
                           @logger.debug('handling disabled', {
-                            :event => event
+                              :event => event
                           })
                         end
                       end
                     end
                   else
                     @logger.debug('check is flapping', {
-                      :event => event
+                        :event => event
                     })
                     @redis.hset('events:' + client[:name], check[:name], previous_occurrence.merge(:flapping => true).to_json).callback do
                       if check[:type] == 'metric'
@@ -410,7 +417,7 @@ module Sensu
       @result_queue.subscribe do |payload|
         result = JSON.parse(payload, :symbolize_names => true)
         @logger.debug('received result', {
-          :result => result
+            :result => result
         })
         process_result(result)
       end
@@ -428,12 +435,12 @@ module Sensu
             @master_timers << EM::PeriodicTimer.new(interval) do
               unless check_subdued?(check, :publisher)
                 payload = {
-                  :name => check[:name],
-                  :issued => Time.now.to_i
+                    :name => check[:name],
+                    :issued => Time.now.to_i
                 }
                 @logger.info('publishing check request', {
-                  :payload => payload,
-                  :subscribers => check[:subscribers]
+                    :payload => payload,
+                    :subscribers => check[:subscribers]
                 })
                 check[:subscribers].uniq.each do |exchange_name|
                   @amq.fanout(exchange_name).publish(payload.to_json)
@@ -447,11 +454,11 @@ module Sensu
 
     def publish_result(client, check)
       payload = {
-        :client => client[:name],
-        :check => check
+          :client => client[:name],
+          :check => check
       }
       @logger.info('publishing check result', {
-        :payload => payload
+          :payload => payload
       })
       @amq.queue('results').publish(payload.to_json)
     end
@@ -465,27 +472,27 @@ module Sensu
             @redis.get('client:' + client_name).callback do |client_json|
               client = JSON.parse(client_json, :symbolize_names => true)
               check = {
-                :name => 'keepalive',
-                :issued => Time.now.to_i
+                  :name => 'keepalive',
+                  :issued => Time.now.to_i
               }
               time_since_last_keepalive = Time.now.to_i - client[:timestamp]
               case
-              when time_since_last_keepalive >= 180
-                check[:output] = 'No keep-alive sent from client in over 180 seconds'
-                check[:status] = 2
-                publish_result(client, check)
-              when time_since_last_keepalive >= 120
-                check[:output] = 'No keep-alive sent from client in over 120 seconds'
-                check[:status] = 1
-                publish_result(client, check)
-              else
-                @redis.hexists('events:' + client[:name], 'keepalive').callback do |exists|
-                  if exists
-                    check[:output] = 'Keep-alive sent from client'
-                    check[:status] = 0
-                    publish_result(client, check)
+                when time_since_last_keepalive >= 180
+                  check[:output] = 'No keep-alive sent from client in over 180 seconds'
+                  check[:status] = 2
+                  publish_result(client, check)
+                when time_since_last_keepalive >= 120
+                  check[:output] = 'No keep-alive sent from client in over 120 seconds'
+                  check[:status] = 1
+                  publish_result(client, check)
+                else
+                  @redis.hexists('events:' + client[:name], 'keepalive').callback do |exists|
+                    if exists
+                      check[:output] = 'Keep-alive sent from client'
+                      check[:status] = 0
+                      publish_result(client, check)
+                    end
                   end
-                end
               end
             end
           end
@@ -585,7 +592,7 @@ module Sensu
 
     def complete_handlers_in_progress(&block)
       @logger.info('completing handlers in progress', {
-        :handlers_in_progress_count => @handlers_in_progress_count
+          :handlers_in_progress_count => @handlers_in_progress_count
       })
       retry_until_true do
         if @handlers_in_progress_count == 0
@@ -604,6 +611,7 @@ module Sensu
     end
 
     def stop
+      puts "stopping..."
       @logger.warn('stopping')
       @timers.each do |timer|
         timer.cancel
@@ -624,7 +632,7 @@ module Sensu
       %w[INT TERM].each do |signal|
         Signal.trap(signal) do
           @logger.warn('received signal', {
-            :signal => signal
+              :signal => signal
           })
           stop
         end
